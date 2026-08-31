@@ -27,6 +27,9 @@ jobs:
     timeout-minutes: 190
 
     env:
+      SUPPRESS_LABEL_WARNING: "True"
+      OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: "True"
+
       OCI_REGION: ${{ secrets.OCI_REGION || 'ap-seoul-1' }}
       BOOT_VOLUME_ID: ${{ secrets.BOOT_VOLUME_ID }}
       COMPARTMENT_ID: ${{ secrets.COMPARTMENT_ID }}
@@ -71,10 +74,10 @@ jobs:
 
           cat > ~/.oci/config <<EOF
           [DEFAULT]
-          user=$OCI_USER_OCID
-          fingerprint=$OCI_FINGERPRINT
-          tenancy=$OCI_TENANCY_OCID
-          region=$OCI_REGION
+          user=$(echo "$OCI_USER_OCID" | tr -d '[:space:]')
+          fingerprint=$(echo "$OCI_FINGERPRINT" | tr -d '[:space:]')
+          tenancy=$(echo "$OCI_TENANCY_OCID" | tr -d '[:space:]')
+          region=$(echo "$OCI_REGION" | tr -d '[:space:]')
           key_file=$HOME/.oci/oci_api_key.pem
           EOF
 
@@ -91,21 +94,28 @@ jobs:
         run: |
           set +e
 
+          # Secret 공백 및 개행 제거
+          BOOT_VOLUME_ID=$(echo "$BOOT_VOLUME_ID" | tr -d '[:space:]')
+          COMPARTMENT_ID=$(echo "$COMPARTMENT_ID" | tr -d '[:space:]')
+          SUBNET_ID=$(echo "$SUBNET_ID" | tr -d '[:space:]')
+          NSG_ID=$(echo "$NSG_ID" | tr -d '[:space:]')
+
           echo "Boot Volume의 가용성 도메인(AD) 조회 중..."
 
-          AD_OUTPUT=$(oci bv boot-volume get \
+          AD=$(oci bv boot-volume get \
             --boot-volume-id "$BOOT_VOLUME_ID" \
             --query 'data."availability-domain"' \
-            --raw-output 2>&1)
+            --raw-output 2>ad_error.txt)
           AD_STATUS=$?
 
-          if [ $AD_STATUS -ne 0 ] || [ -z "$AD_OUTPUT" ] || [[ "$AD_OUTPUT" == *"Error"* ]]; then
+          if [ $AD_STATUS -ne 0 ] || [ -z "$AD" ]; then
             echo "::error::Boot Volume 조회 실패. OCI 설정 또는 Secret 값을 확인하세요."
-            echo "$AD_OUTPUT"
+            cat ad_error.txt || true
             exit 1
           fi
 
-          AD="$AD_OUTPUT"
+          # AD 값 정리
+          AD=$(echo "$AD" | tr -d '[:space:]')
 
           echo
           echo "=========================================="
