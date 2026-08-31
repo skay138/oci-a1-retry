@@ -1,0 +1,210 @@
+name: OCI A1 Recovery
+
+on:
+  schedule:
+    # UTC 기준 매 3시간마다 실행 (00:17, 03:17, 06:17, 09:17, 12:17, 15:17, 18:17, 21:17 UTC)
+    # 한국시간(KST): 09:17, 12:17, 15:17, 18:17, 21:17, 00:17, 03:17, 06:17
+    # 정각/5분 단위 트래픽 몰림 방지를 위한 17분 설정
+    - cron: "17 */3 * * *"
+
+  # GitHub Actions 콘솔에서 수동 즉시 실행 가능
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+# 이전 작업이 아직 실행 중이면 중복 실행 방지
+concurrency:
+  group: oci-a1-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+
+    # GitHub Actions 실행 최대 제한 시간 (3시간 10분)
+    timeout-minutes: 190
+
+    env:
+      OCI_REGION: ${{ secrets.OCI_REGION || 'ap-seoul-1' }}
+      BOOT_VOLUME_ID: ${{ secrets.BOOT_VOLUME_ID }}
+      COMPARTMENT_ID: ${{ secrets.COMPARTMENT_ID }}
+      SUBNET_ID: ${{ secrets.SUBNET_ID }}
+      NSG_ID: ${{ secrets.NSG_ID }}
+
+      OCPUS: ${{ vars.OCPUS || '1' }}
+      MEMORY: ${{ vars.MEMORY || '6' }}
+      NAME: ${{ vars.INSTANCE_NAME || 'recovered-a1' }}
+
+    steps:
+      # ---------------------------------------------------------
+      # Python 환경 설정
+      # ---------------------------------------------------------
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ---------------------------------------------------------
+      # OCI CLI 설치
+      # ---------------------------------------------------------
+      - name: Install OCI CLI
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet oci-cli
+
+      # ---------------------------------------------------------
+      # OCI CLI 인증 설정
+      # ---------------------------------------------------------
+      - name: Configure OCI
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.oci
+
+          printf "%s\n" "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/oci_api_key.pem
+          EOF
+
+          chmod 600 ~/.oci/config
+
+          echo "OCI 인증 설정 완료"
+
+      # ---------------------------------------------------------
+      # A1 생성 재시도 루프 (60초 주기, 최대 170회)
+      # ---------------------------------------------------------
+      - name: Retry A1 Launch every 60 seconds
+        id: retry
+        shell: bash
+        run: |
+          set +e
+
+          echo "Boot Volume의 가용성 도메인(AD) 조회 중..."
+
+          AD_OUTPUT=$(oci bv boot-volume get \
+            --boot-volume-id "$BOOT_VOLUME_ID" \
+            --query 'data."availability-domain"' \
+            --raw-output 2>&1)
+          AD_STATUS=$?
+
+          if [ $AD_STATUS -ne 0 ] || [ -z "$AD_OUTPUT" ] || [[ "$AD_OUTPUT" == *"Error"* ]]; then
+            echo "::error::Boot Volume 조회 실패. OCI 설정 또는 Secret 값을 확인하세요."
+            echo "$AD_OUTPUT"
+            exit 1
+          fi
+
+          AD="$AD_OUTPUT"
+
+          echo
+          echo "=========================================="
+          echo " Availability Domain : $AD"
+          echo " Boot Volume OCID    : $BOOT_VOLUME_ID"
+          echo " Subnet OCID         : $SUBNET_ID"
+          echo " Shape               : VM.Standard.A1.Flex"
+          echo " Spec (OCPU / RAM)   : ${OCPUS} OCPU / ${MEMORY} GB"
+          echo " Max Attempts        : 170"
+          echo " Interval            : 60 seconds"
+          echo "=========================================="
+
+          for ATTEMPT in $(seq 1 170)
+          do
+            echo
+            echo "------------------------------------------"
+            echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] A1 생성 시도 ($ATTEMPT / 170)"
+            echo "------------------------------------------"
+
+            ARGS=(
+              compute instance launch
+              --availability-domain "$AD"
+              --compartment-id "$COMPARTMENT_ID"
+              --subnet-id "$SUBNET_ID"
+              --shape "VM.Standard.A1.Flex"
+              --shape-config "{\"ocpus\":$OCPUS,\"memoryInGBs\":$MEMORY}"
+              --source-boot-volume-id "$BOOT_VOLUME_ID"
+              --assign-public-ip true
+              --display-name "$NAME"
+              --wait-for-state RUNNING
+              --no-retry
+              --query "data.id"
+              --raw-output
+            )
+
+            # NSG(네트워크 보안 그룹) ID가 있는 경우 추가
+            if [ -n "$NSG_ID" ]; then
+              ARGS+=(
+                --nsg-ids "[\"$NSG_ID\"]"
+              )
+            fi
+
+            INSTANCE_ID=$(oci "${ARGS[@]}" 2>oci-error.txt)
+            RESULT=$?
+
+            # ---------------------------------------------------
+            # 성공 판정
+            # ---------------------------------------------------
+            if [ $RESULT -eq 0 ] && [[ "$INSTANCE_ID" == ocid1.instance* ]]; then
+              echo
+              echo "=========================================="
+              echo "🎉 A1 인스턴스 생성 성공!"
+              echo "=========================================="
+              echo "Instance OCID: $INSTANCE_ID"
+
+              echo "success=true" >> "$GITHUB_OUTPUT"
+              echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            # ---------------------------------------------------
+            # 용량 부족(Out of Host Capacity) 등 실패 시 재시도
+            # ---------------------------------------------------
+            echo "생성 실패 (시도 $ATTEMPT/170)"
+            if [ -f oci-error.txt ]; then
+              cat oci-error.txt
+            fi
+
+            if [ "$ATTEMPT" -lt 170 ]; then
+              echo "60초 대기 후 재시도합니다..."
+              sleep 60
+            fi
+          done
+
+          echo
+          echo "=========================================="
+          echo "이번 워크플로우(170회) 내에 생성되지 않았습니다."
+          echo "다음 스케줄(3시간 주기)에서 계속 시도합니다."
+          echo "=========================================="
+
+          echo "success=false" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      # ---------------------------------------------------------
+      # 인스턴스 생성 성공 시 워크플로우 자동 비활성화
+      # ---------------------------------------------------------
+      - name: Disable workflow after success
+        if: steps.retry.outputs.success == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "인스턴스 생성 완료 확인 → 워크플로우 자동 비활성화 실행"
+          gh workflow disable a1-recovery.yml || {
+            echo "gh CLI 실패 시 REST API로 비활성화 시도"
+            curl -s --fail-with-body \
+              -X PUT \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/a1-recovery.yml/disable"
+          }
+          echo "워크플로우가 성공적으로 비활성화되었습니다."
