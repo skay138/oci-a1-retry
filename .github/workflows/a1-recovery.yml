@@ -135,15 +135,16 @@ jobs:
             echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] A1 생성 시도 ($ATTEMPT / 170)"
             echo "------------------------------------------"
 
+            export SUPPRESS_LABEL_WARNING=True
+            
             ARGS=(
               compute instance launch
               --availability-domain "$AD"
               --compartment-id "$COMPARTMENT_ID"
               --subnet-id "$SUBNET_ID"
               --shape "VM.Standard.A1.Flex"
-              --shape-config "{\"ocpus\":$OCPUS,\"memoryInGBs\":$MEMORY}"
-              --source-boot-volume-id "$BOOT_VOLUME_ID"
-              --assign-public-ip true
+              --shape-config "{\"ocpus\": ${OCPUS}, \"memoryInGBs\": ${MEMORY}}"
+              --source-details "{\"sourceType\": \"bootVolume\", \"bootVolumeId\": \"$BOOT_VOLUME_ID\"}"
               --display-name "$NAME"
               --wait-for-state RUNNING
               --no-retry
