@@ -86,7 +86,7 @@ jobs:
           echo "OCI 인증 설정 완료"
 
       # ---------------------------------------------------------
-      # A1 생성 재시도 루프 (60초 주기, 최대 170회)
+      # A1 생성 재시도 루프 (60초 주기, 최대 150회)
       # ---------------------------------------------------------
       - name: Retry A1 Launch every 60 seconds
         id: retry
@@ -124,15 +124,15 @@ jobs:
           echo " Subnet OCID         : $SUBNET_ID"
           echo " Shape               : VM.Standard.A1.Flex"
           echo " Spec (OCPU / RAM)   : ${OCPUS} OCPU / ${MEMORY} GB"
-          echo " Max Attempts        : 170"
+          echo " Max Attempts        : 150"
           echo " Interval            : 60 seconds"
           echo "=========================================="
 
-          for ATTEMPT in $(seq 1 170)
+          for ATTEMPT in $(seq 1 150)
           do
             echo
             echo "------------------------------------------"
-            echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] A1 생성 시도 ($ATTEMPT / 170)"
+            echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] A1 생성 시도 ($ATTEMPT / 150)"
             echo "------------------------------------------"
 
             export SUPPRESS_LABEL_WARNING=True
@@ -180,12 +180,12 @@ jobs:
             # ---------------------------------------------------
             # 용량 부족(Out of Host Capacity) 등 실패 시 재시도
             # ---------------------------------------------------
-            echo "생성 실패 (시도 $ATTEMPT/170)"
+            echo "생성 실패 (시도 $ATTEMPT/150)"
             if [ -f oci-error.txt ]; then
               cat oci-error.txt
             fi
 
-            if [ "$ATTEMPT" -lt 170 ]; then
+            if [ "$ATTEMPT" -lt 150 ]; then
               echo "60초 대기 후 재시도합니다..."
               sleep 60
             fi
@@ -193,7 +193,7 @@ jobs:
 
           echo
           echo "=========================================="
-          echo "이번 워크플로우(170회) 내에 생성되지 않았습니다."
+          echo "이번 워크플로우(150회) 내에 생성되지 않았습니다."
           echo "다음 스케줄(3시간 주기)에서 계속 시도합니다."
           echo "=========================================="
 
