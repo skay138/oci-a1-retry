@@ -1,4 +1,4 @@
-# OCI A1 Recovery via GitHub Actions
+# OCI A1 Recovery via GitHub Actions!
 
 GitHub Actions(Public Repository 무료 Runner)를 활용하여 Oracle Cloud Infrastructure (OCI) ARM(A1.Flex) 인스턴스를 지속적으로 생성/복구 시도하는 워크플로우입니다.
 
